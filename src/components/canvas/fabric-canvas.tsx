@@ -601,13 +601,34 @@ const FabricCanvas = forwardRef<FabricCanvasRef, FabricCanvasProps>(
 
         if (dataToLoad) {
           isUndoRedoRef.current = true;
+
+          // Strip width/height from the JSON before loading so that Fabric.js
+          // does not silently reset canvas dimensions back to the old paper size.
+          // Our scaleObjectsToDimensions call below handles resizing objects to
+          // the new canvas dimensions.
+          let jsonToLoad: string;
+          try {
+            const rawStr = typeof dataToLoad === "string" ? dataToLoad : JSON.stringify(dataToLoad);
+            const parsed = JSON.parse(rawStr) as Record<string, unknown>;
+            delete parsed.width;
+            delete parsed.height;
+            jsonToLoad = JSON.stringify(parsed);
+          } catch {
+            jsonToLoad = typeof dataToLoad === "string" ? dataToLoad : JSON.stringify(dataToLoad);
+          }
+
           canvas
-            .loadFromJSON(prepareCanvasData(normalizeCanvasFonts(dataToLoad)))
+            .loadFromJSON(prepareCanvasData(normalizeCanvasFonts(jsonToLoad)))
             .then(() => {
               if (fabricRef.current !== canvas) {
                 isUndoRedoRef.current = false;
                 return;
               }
+
+              // Ensure canvas dimensions match the target paper size (loadFromJSON
+              // may have altered them if stale width/height bled through).
+              canvas.setDimensions({ width, height });
+
               // Always reset viewport to identity so templates don't load zoomed-in.
               canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
               canvas.setZoom(1);
