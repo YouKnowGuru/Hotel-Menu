@@ -183,6 +183,7 @@ const FabricCanvas = forwardRef<FabricCanvasRef, FabricCanvasProps>(
     const isInternalRef = useRef(false);
     const clipboardRef = useRef<FabricObject | null>(null);
     const savedJsonRef = useRef<string | null>(null);
+    const savedDimsRef = useRef<{ width: number; height: number } | null>(null);
     // True once any canvas JSON has finished loading (initial or imperative).
     // Used to avoid snapshotting a still-empty canvas during StrictMode
     // remounts, which would otherwise shadow `initialData` with a blank page.
@@ -201,6 +202,80 @@ const FabricCanvas = forwardRef<FabricCanvasRef, FabricCanvasProps>(
       bleed: 12,
       ...(overlaySettings ?? {}),
     });
+
+    const scaleObjectsToDimensions = useCallback(
+      (canvas: Canvas, targetW: number, targetH: number, srcW: number, srcH: number) => {
+        if (!srcW || !srcH || !targetW || !targetH) return;
+        const scaleX = targetW / srcW;
+        const scaleY = targetH / srcH;
+
+        if (Math.abs(scaleX - 1) < 0.005 && Math.abs(scaleY - 1) < 0.005) {
+          return;
+        }
+
+        const objects = canvas
+          .getObjects()
+          .filter(
+            (o) =>
+              !overlayObjectsRef.current.includes(o) &&
+              o !== guideVRef.current &&
+              o !== guideHRef.current
+          );
+
+        objects.forEach((obj) => {
+          // Detect full-page background rect
+          const isFullBg =
+            obj.type === "rect" &&
+            Math.abs(obj.left ?? 0) <= 4 &&
+            Math.abs(obj.top ?? 0) <= 4 &&
+            Math.abs((obj.width ?? 0) * (obj.scaleX ?? 1) - srcW) <= 10 &&
+            Math.abs((obj.height ?? 0) * (obj.scaleY ?? 1) - srcH) <= 10;
+
+          if (isFullBg) {
+            obj.set({
+              left: 0,
+              top: 0,
+              width: targetW,
+              height: targetH,
+              scaleX: 1,
+              scaleY: 1,
+            });
+            const fill = obj.fill as unknown as { coords?: { x1: number; y1: number; x2: number; y2: number } } | null;
+            if (fill && typeof fill === "object" && fill.coords) {
+              fill.coords.x2 = targetW;
+              fill.coords.y2 = targetH;
+            }
+            obj.setCoords();
+            return;
+          }
+
+          // Scale coordinates and dimensions
+          const oldLeft = obj.left ?? 0;
+          const oldTop = obj.top ?? 0;
+          obj.set({
+            left: Math.round(oldLeft * scaleX),
+            top: Math.round(oldTop * scaleY),
+            scaleX: (obj.scaleX ?? 1) * scaleX,
+            scaleY: (obj.scaleY ?? 1) * scaleY,
+          });
+
+          if (obj.type === "line") {
+            const line = obj as Line;
+            line.set({
+              x1: (line.x1 ?? 0) * scaleX,
+              y1: (line.y1 ?? 0) * scaleY,
+              x2: (line.x2 ?? 0) * scaleX,
+              y2: (line.y2 ?? 0) * scaleY,
+            });
+          }
+
+          obj.setCoords();
+        });
+
+        canvas.requestRenderAll();
+      },
+      []
+    );
 
     const saveHistory = useCallback(() => {
       if (!fabricRef.current || isUndoRedoRef.current || isInternalRef.current) return;
@@ -481,6 +556,38 @@ const FabricCanvas = forwardRef<FabricCanvasRef, FabricCanvasProps>(
 
       const dataToLoad = savedJsonRef.current ?? initialData;
 
+      // Extract original canvas dimensions from template/saved JSON
+      let sourceWidth = 794;
+      let sourceHeight = 1123;
+      if (savedDimsRef.current) {
+        sourceWidth = savedDimsRef.current.width;
+        sourceHeight = savedDimsRef.current.height;
+      } else if (dataToLoad) {
+        try {
+          const raw = typeof dataToLoad === "string" ? JSON.parse(dataToLoad) : dataToLoad;
+          if (raw.width && raw.height) {
+            sourceWidth = Number(raw.width);
+            sourceHeight = Number(raw.height);
+          } else if (Array.isArray(raw.objects) && raw.objects.length > 0) {
+            const bg = raw.objects.find(
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              (o: any) =>
+                o.type === "rect" &&
+                (o.left === 0 || o.left == null) &&
+                (o.top === 0 || o.top == null) &&
+                o.width > 200 &&
+                o.height > 200
+            );
+            if (bg) {
+              sourceWidth = Number(bg.width || 794) * Number(bg.scaleX || 1);
+              sourceHeight = Number(bg.height || 1123) * Number(bg.scaleY || 1);
+            }
+          }
+        } catch {
+          // fallback to standard A4 (794x1123)
+        }
+      }
+
       // Load fonts FIRST, then load canvas JSON.
       // This ensures text is measured with correct font metrics from the
       // start — preventing center/right-aligned text from jumping when
@@ -505,6 +612,11 @@ const FabricCanvas = forwardRef<FabricCanvasRef, FabricCanvasProps>(
               canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
               canvas.setZoom(1);
               canvas.absolutePan(new Point(0, 0));
+
+              // Scale objects proportionally to fit current canvas dimensions
+              scaleObjectsToDimensions(canvas, width, height, sourceWidth, sourceHeight);
+              savedDimsRef.current = { width, height };
+
               didLoadContentRef.current = true;
               canvas.requestRenderAll();
               rebuildOverlays();
@@ -526,7 +638,7 @@ const FabricCanvas = forwardRef<FabricCanvasRef, FabricCanvasProps>(
       });
 
       return () => {
-        // Preserve canvas content across width/height remounts (orientation
+        // Preserve canvas content across width/height remounts (orientation / paper size
         // changes). Only persist when real user objects exist — overlay
         // decorations (grid, guides, bleed) should not count, otherwise a
         // blank canvas with overlays shadows `initialData` when switching
@@ -537,6 +649,7 @@ const FabricCanvas = forwardRef<FabricCanvasRef, FabricCanvasProps>(
             canvas.getObjects().some((o) => !overlayObjectsRef.current.includes(o));
           if (hasRealContent) {
             savedJsonRef.current = JSON.stringify(canvas.toJSON());
+            savedDimsRef.current = { width: canvas.getWidth(), height: canvas.getHeight() };
           }
         } catch { savedJsonRef.current = null; }
         canvas.dispose();
@@ -2111,6 +2224,32 @@ const FabricCanvas = forwardRef<FabricCanvasRef, FabricCanvasProps>(
           return;
         }
 
+        let sourceWidth = 794;
+        let sourceHeight = 1123;
+        try {
+          const raw = typeof json === "string" ? JSON.parse(json) : json;
+          if (raw.width && raw.height) {
+            sourceWidth = Number(raw.width);
+            sourceHeight = Number(raw.height);
+          } else if (Array.isArray(raw.objects) && raw.objects.length > 0) {
+            const bg = raw.objects.find(
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              (o: any) =>
+                o.type === "rect" &&
+                (o.left === 0 || o.left == null) &&
+                (o.top === 0 || o.top == null) &&
+                o.width > 200 &&
+                o.height > 200
+            );
+            if (bg) {
+              sourceWidth = Number(bg.width || 794) * Number(bg.scaleX || 1);
+              sourceHeight = Number(bg.height || 1123) * Number(bg.scaleY || 1);
+            }
+          }
+        } catch {
+          // fallback
+        }
+
         isUndoRedoRef.current = true;
         canvas
           .loadFromJSON(prepareCanvasData(normalizeCanvasFonts(json)))
@@ -2120,6 +2259,10 @@ const FabricCanvas = forwardRef<FabricCanvasRef, FabricCanvasProps>(
             canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
             canvas.setZoom(1);
             canvas.absolutePan(new Point(0, 0));
+
+            scaleObjectsToDimensions(canvas, width, height, sourceWidth, sourceHeight);
+            savedDimsRef.current = { width, height };
+
             didLoadContentRef.current = true;
             canvas.requestRenderAll();
             rebuildOverlays();

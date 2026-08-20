@@ -53,6 +53,11 @@ export default function EditorPage() {
   });
 
   const [project, setProject] = useState<Project | null>(null);
+  const [projectName, setProjectName] = useState("Untitled Menu");
+  const [paperSize, setPaperSize] = useState<string>("A4");
+  const [orientation, setOrientation] = useState<"portrait" | "landscape">("portrait");
+  const [customWidth, setCustomWidth] = useState(210);
+  const [customHeight, setCustomHeight] = useState(297);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isDirty, setIsDirty] = useState(false);
@@ -92,6 +97,13 @@ export default function EditorPage() {
         }
 
         setProject(data.data);
+        setProjectName(data.data.name || "Untitled Menu");
+        if (data.data.paperSize) setPaperSize(data.data.paperSize);
+        if (data.data.orientation === "landscape" || data.data.orientation === "portrait") {
+          setOrientation(data.data.orientation);
+        }
+        if (data.data.customWidth) setCustomWidth(data.data.customWidth);
+        if (data.data.customHeight) setCustomHeight(data.data.customHeight);
       } catch {
         if (!cancelled) setError("Failed to load project");
       } finally {
@@ -206,7 +218,13 @@ export default function EditorPage() {
       const res = await fetch(`/api/projects/${projectId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ canvasData }),
+        body: JSON.stringify({
+          name: projectName,
+          canvasData,
+          paperSize,
+          orientation,
+          ...(paperSize === "custom" ? { customWidth, customHeight } : {}),
+        }),
       });
 
       if (!res.ok) throw new Error("Save failed");
@@ -334,9 +352,14 @@ export default function EditorPage() {
     setZoom(100);
   }, []);
 
-  const paperSize = project?.paperSize || "A4";
-  const orientation = (project?.orientation as "portrait" | "landscape") || "portrait";
-  const paper = paperDims(paperSize, orientation);
+  const baseW =
+    paperSize === "custom" ? customWidth : PAPER_SIZES[paperSize]?.width ?? 210;
+  const baseH =
+    paperSize === "custom" ? customHeight : PAPER_SIZES[paperSize]?.height ?? 297;
+  const paper =
+    orientation === "landscape"
+      ? { width: Math.round(baseH * MM_TO_PX), height: Math.round(baseW * MM_TO_PX) }
+      : { width: Math.round(baseW * MM_TO_PX), height: Math.round(baseH * MM_TO_PX) };
   const paperInfo = PAPER_SIZES[paperSize] ?? PAPER_SIZES.A4;
 
   const handleQuickPrint = useCallback(() => {
@@ -345,10 +368,10 @@ export default function EditorPage() {
       toast.error("Nothing to print yet");
       return;
     }
-    const w = orientation === "landscape" ? paperInfo.height : paperInfo.width;
-    const h = orientation === "landscape" ? paperInfo.width : paperInfo.height;
+    const w = orientation === "landscape" ? baseH : baseW;
+    const h = orientation === "landscape" ? baseW : baseH;
     printImage(url, w, h);
-  }, [orientation, paperInfo]);
+  }, [orientation, baseW, baseH]);
 
   const handleSaveAsTemplate = useCallback(async () => {
     if (!project) return;
@@ -476,6 +499,99 @@ export default function EditorPage() {
         viewSettings={viewSettings}
         onViewSettingChange={handleViewSettingChange}
       />
+
+      {/* Paper setup strip */}
+      <div className="glass flex flex-wrap items-center gap-3 border-b border-white/5 px-4 py-2">
+        <span className="text-xs font-semibold uppercase tracking-wider text-white/50">
+          Menu Name
+        </span>
+        <input
+          type="text"
+          value={projectName}
+          onChange={(e) => {
+            setProjectName(e.target.value);
+            setIsDirty(true);
+            setSaveStatus("unsaved");
+          }}
+          className="glass-input w-44 px-3 py-1.5 text-sm"
+          aria-label="Menu name"
+        />
+        <div className="h-5 w-px bg-white/10" />
+        <span className="text-xs font-semibold uppercase tracking-wider text-white/50">
+          Paper
+        </span>
+        <select
+          value={paperSize}
+          onChange={(e) => {
+            setPaperSize(e.target.value);
+            setIsDirty(true);
+            setSaveStatus("unsaved");
+          }}
+          className="glass-input px-3 py-1.5 text-sm"
+          aria-label="Paper size"
+        >
+          {Object.entries(PAPER_SIZES).map(([key, size]) => (
+            <option key={key} value={key} className="bg-surface-900">
+              {size.label}
+            </option>
+          ))}
+          <option value="custom" className="bg-surface-900">
+            Custom size
+          </option>
+        </select>
+        {paperSize === "custom" && (
+          <div className="flex items-center gap-1">
+            <input
+              type="number"
+              min={50}
+              max={2000}
+              value={customWidth}
+              onChange={(e) => {
+                setCustomWidth(Number(e.target.value) || 210);
+                setIsDirty(true);
+                setSaveStatus("unsaved");
+              }}
+              className="glass-input w-20 px-2 py-1.5 text-sm"
+              aria-label="Custom width in mm"
+            />
+            <span className="text-xs text-white/40">×</span>
+            <input
+              type="number"
+              min={50}
+              max={2000}
+              value={customHeight}
+              onChange={(e) => {
+                setCustomHeight(Number(e.target.value) || 297);
+                setIsDirty(true);
+                setSaveStatus("unsaved");
+              }}
+              className="glass-input w-20 px-2 py-1.5 text-sm"
+              aria-label="Custom height in mm"
+            />
+            <span className="text-xs text-white/40">mm</span>
+          </div>
+        )}
+        <div className="flex overflow-hidden rounded-lg border border-white/10">
+          {(["portrait", "landscape"] as const).map((o) => (
+            <button
+              key={o}
+              onClick={() => {
+                setOrientation(o);
+                setIsDirty(true);
+                setSaveStatus("unsaved");
+              }}
+              aria-pressed={orientation === o}
+              className={
+                orientation === o
+                  ? "bg-primary-500/20 px-3 py-1.5 text-xs font-medium capitalize text-primary-400"
+                  : "px-3 py-1.5 text-xs capitalize text-white/40 hover:text-white/70"
+              }
+            >
+              {o}
+            </button>
+          ))}
+        </div>
+      </div>
 
       <div className="flex flex-1 overflow-hidden">
         <EditorSidebar
