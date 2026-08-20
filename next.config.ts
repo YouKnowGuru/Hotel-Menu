@@ -18,7 +18,16 @@ const nextConfig: NextConfig = {
       { protocol: "https", hostname: "avatars.githubusercontent.com" },
     ],
   },
-  allowedDevOrigins: ["192.168.8.83", "localhost", "127.0.0.1"],
+  allowedDevOrigins: [
+    "192.168.1.5",
+    "192.168.1.5:3000",
+    "192.168.8.83",
+    "192.168.8.83:3000",
+    "localhost",
+    "localhost:3000",
+    "127.0.0.1",
+    "127.0.0.1:3000",
+  ],
   experimental: {
     serverActions: {
       bodySizeLimit: "10mb",
